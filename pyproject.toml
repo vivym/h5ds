@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h5ds"
+dynamic = ["version"]
+description = "h5ds"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "./LICENSE" }
+keywords = ["Robotics", "Dataset"]
+authors = [
+  { name = "Ming Yang", email = "ymviv@qq.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "blosc2>=3.0.0",
+    "blosc2_grok>=0.3.3",
+    "h5py>=3.12.1",
+    "hdf5plugin>=5.0.0",
+    "Pillow>=11.1.0",
+    "tensorflow>=2.18.0",
+    "tfds-nightly",
+    "tqdm>=4.67.1",
+]
+
+[project.urls]
+Documentation = "https://github.com/vivym/h5ds#readme"
+Issues = "https://github.com/vivym/h5ds/issues"
+Source = "https://github.com/vivym/h5ds"
+
+[project.scripts]
+h5ds = "h5ds.__main__:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "h5ds.__version__"}
+
+[tool.pyright]
+exclude = ["data"]
+typeCheckingMode = "off"
