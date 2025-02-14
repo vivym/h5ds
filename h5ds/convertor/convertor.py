@@ -1,17 +1,13 @@
 import hashlib
-import io
 import json
 import multiprocessing as mp
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
-import blosc2
-import blosc2_grok
 import h5py
-import hdf5plugin
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
 try:
@@ -45,7 +41,7 @@ class WriteTask:
     output_path: Path
     type: Literal[
         "statistics",
-        "obs",
+        "observations",
         "actions",
         "tasks",
         "episode_start_end_idxs",
@@ -55,35 +51,82 @@ class WriteTask:
     chunk_idx: int | None = None
 
 
-# def image_to_b2img(img: np.ndarray, *, cparams: dict) -> blosc2.Array:
-#     return blosc2.asarray(
-#         img,
-#         chunks=img.shape,
-#         blocks=img.shape,
-#         cparams=cparams,
-#     )
+def execute_write_task(task: WriteTask, *, fp_dict: dict[str, h5py.File]):
+    output_path = task.output_path
+    output_path_str = str(output_path)
+
+    if output_path_str not in fp_dict:
+        fp_dict[output_path_str] = h5py.File(output_path, "w", locking=True)
+
+    fp = fp_dict[output_path_str]
+
+    if task.type == "statistics":
+        fp.create_dataset(
+            "statistics",
+            data=task.data,
+            shape=(),
+            dtype=h5py.string_dtype(),
+        )
+    elif task.type == "observations":
+        if "observations" not in fp:
+            obs_group = fp.create_group("observations")
+        else:
+            obs_group = fp["observations"]
+
+        assert task.chunk_idx is not None
+
+        for key, value in task.data.items():
+            if key not in obs_group:
+                obs_group.create_group(key)
+            g = obs_group[key]
+
+            if key.startswith("rgb_"):
+                imgs = []
+                img_indices = []
+                cur_idx = 0
+                for value_i in value:
+                    for img in value_i:
+                        imgs.append(np.frombuffer(img, dtype=np.uint8))
+                        img_indices.append((cur_idx, cur_idx + len(img)))
+                        cur_idx += len(img)
+
+                imgs = np.concatenate(imgs, axis=0)
+                img_indices = np.array(img_indices, dtype=np.int64)
+
+                g.create_dataset(f"{task.chunk_idx:06d}", data=imgs)
+                g.create_dataset(f"{task.chunk_idx:06d}_indices", data=img_indices)
+            elif key.startswith("depth_"):
+                raise NotImplementedError("Depth images are not supported yet")
+            elif key == "proprio":
+                v = np.concatenate(value, axis=0)
+                g.create_dataset(f"{task.chunk_idx:06d}", data=v)
+            else:
+                raise ValueError(f"Unknown observation key: {key}")
+    elif task.type == "actions":
+        fp.create_dataset("actions", data=task.data)
+    elif task.type == "tasks":
+        if "tasks" not in fp:
+            g = fp.create_group("tasks")
+        else:
+            g = fp["tasks"]
+
+        for key, value in task.data.items():
+            if len(value) > 0 and isinstance(value[0], str):
+                g.create_dataset(key, data=value, dtype=h5py.string_dtype())
+            else:
+                g.create_dataset(key, data=np.concatenate(value, axis=0))
+    elif task.type == "episode_start_end_idxs":
+        fp.create_dataset("episode_start_end_idxs", data=task.data, dtype=np.int64)
+    elif task.type == "close":
+        fp.close()
+        del fp_dict[output_path_str]
+    else:
+        raise ValueError(f"Unknown task type: {task.type}")
 
 
 def write_worker(
     queue: mp.Queue,
 ):
-    # b2_params = hdf5plugin.Blosc2()
-    # cparams = {
-    #     "codec": blosc2.Codec.GROK,
-    #     "nthreads": 16,
-    #     "filters": [],
-    #     "splitmode": blosc2.SplitMode.NEVER_SPLIT,
-    # }
-
-    # blosc2_grok.set_params_defaults(
-    #     **{
-    #         "cod_format": blosc2_grok.GrkFileFmt.GRK_FMT_JP2,
-    #         "num_threads": 16,
-    #         "quality_mode": "rates",
-    #         "quality_layers": np.array([5], dtype=np.float64),
-    #     }
-    # )
-
     fp_dict: dict[str, h5py.File] = {}
 
     while True:
@@ -92,113 +135,7 @@ def write_worker(
         if task is None:
             break
 
-        output_path = task.output_path
-        output_path_str = str(output_path)
-
-        if output_path_str not in fp_dict:
-            fp_dict[output_path_str] = h5py.File(output_path, "w", locking=True)
-
-        fp = fp_dict[output_path_str]
-
-        if task.type == "statistics":
-            fp.create_dataset(
-                "statistics",
-                data=task.data,
-                shape=(),
-                dtype=h5py.string_dtype(),
-            )
-        elif task.type == "obs":
-            if "obs" not in fp:
-                obs_group = fp.create_group("obs")
-            else:
-                obs_group = fp["obs"]
-
-            assert task.chunk_idx is not None
-
-            for key, value in task.data.items():
-                if key not in obs_group:
-                    obs_group.create_group(key)
-                g = obs_group[key]
-
-                if key.startswith("rgb_"):
-                    import time
-
-                    start = time.time()
-
-                    imgs = []
-                    img_indices = []
-                    cur_idx = 0
-                    for value_i in value:
-                        for img in value_i:
-                            imgs.append(np.frombuffer(img, dtype=np.uint8))
-                            img_indices.append((cur_idx, cur_idx + len(img)))
-                            cur_idx += len(img)
-
-                    imgs = np.concatenate(imgs, axis=0)
-                    img_indices = np.array(img_indices, dtype=np.int64)
-
-                    g.create_dataset(f"{task.chunk_idx:06d}", data=imgs)
-                    g.create_dataset(f"{task.chunk_idx:06d}_indices", data=img_indices)
-
-                    print("writing time", time.time() - start)
-
-                    # imgs = []
-                    # import time
-                    # start = time.time()
-                    # for value_i in value:
-                    #     for img in value_i:
-                    #         img_buffer = io.BytesIO(img)
-                    #         imgs.append(np.array(Image.open(img_buffer).convert("RGB")))
-                    # print("decoding time", time.time() - start)
-
-                    # ds = g.create_dataset(
-                    #     f"{task.chunk_idx:06d}",
-                    #     shape=(len(imgs), *imgs[0].shape),
-                    #     dtype=imgs[0].dtype,
-                    #     chunks=(1, *imgs[0].shape),
-                    #     **b2_params,
-                    # )
-
-                    # start = time.time()
-
-                    # v = np.stack(imgs, axis=0)
-                    # b2img = blosc2.asarray(
-                    #     v,
-                    #     chunks=(1, *v.shape[1:]),
-                    #     blocks=(1, *v.shape[1:]),
-                    #     cparams=cparams,
-                    # )
-                    # print("compression time", time.time() - start)
-
-                    # start = time.time()
-                    # ds.id.write_direct_chunk(
-                    #     (0, 0, 0, 0),
-                    #     b2img.schunk.to_cframe(),
-                    # )
-
-                    # print("writing time", time.time() - start)
-                elif key.startswith("depth_"):
-                    raise NotImplementedError("Depth images are not supported yet")
-                elif key == "proprio":
-                    v = np.concatenate(value, axis=0)
-                    g.create_dataset(f"{task.chunk_idx:06d}", data=v)
-                else:
-                    raise ValueError(f"Unknown observation key: {key}")
-        elif task.type == "actions":
-            fp.create_dataset("actions", data=task.data)
-        elif task.type == "tasks":
-            for key, value in task.data.items():
-                if len(value) > 0 and isinstance(value[0], str):
-                    fp.create_dataset(key, data=value, dtype=h5py.string_dtype())
-                else:
-                    fp.create_dataset(key, data=np.concatenate(value, axis=0))
-        elif task.type == "episode_start_end_idxs":
-            fp.create_dataset("episode_start_end_idxs", data=task.data, dtype=np.int64)
-        elif task.type == "close":
-            fp.close()
-            del fp_dict[output_path_str]
-        else:
-            raise ValueError(f"Unknown task type: {task.type}")
+        execute_write_task(task, fp_dict=fp_dict)
 
 
 class Convertor:
@@ -243,9 +180,8 @@ class Convertor:
 
         print("Splits:", ", ".join(all_ds.keys()))
 
-        queue = mp.Queue()
-        writer_process = mp.Process(target=write_worker, args=(queue,))
-        writer_process.start()
+        fp_dict: dict[str, h5py.File] = {}
+        execute_write_task_func = partial(execute_write_task, fp_dict=fp_dict)
 
         for split, ds in all_ds.items():
             output_path = self.output_dir / f"{split}.h5"
@@ -262,7 +198,7 @@ class Convertor:
             cur_step = 0
             num_steps_to_write = 0
 
-            queue.put(WriteTask(output_path, "statistics", statistics_str))
+            execute_write_task_func(WriteTask(output_path, "statistics", statistics_str))
 
             cur_obs_chunk_idx = 0
 
@@ -271,7 +207,13 @@ class Convertor:
                 total=cardinality if cardinality != tf.data.UNKNOWN_CARDINALITY else None,
             ):
                 episode_len = episode["_episode_len"][0]
-                episode_start_end_idxs.append((cur_obs_chunk_idx, cur_step, cur_step + episode_len))
+                episode_start_end_idxs.append((
+                    cur_step,
+                    cur_step + episode_len,
+                    cur_obs_chunk_idx,
+                    num_steps_to_write,
+                    num_steps_to_write + episode_len,
+                ))
 
                 actions.append(episode["action"])
 
@@ -288,28 +230,31 @@ class Convertor:
                 cur_step += episode_len
                 num_steps_to_write += episode_len
 
-                if num_steps_to_write >= 1000:
-                    queue.put(WriteTask(output_path, "obs", obs, chunk_idx=cur_obs_chunk_idx))
+                if num_steps_to_write >= 10000:
+                    execute_write_task_func(
+                        WriteTask(output_path, "observations", obs, chunk_idx=cur_obs_chunk_idx)
+                    )
                     obs = {}
                     num_steps_to_write = 0
                     cur_obs_chunk_idx += 1
 
             if num_steps_to_write > 0:
-                queue.put(WriteTask(output_path, "obs", obs, chunk_idx=cur_obs_chunk_idx))
+                execute_write_task_func(
+                    WriteTask(output_path, "observations", obs, chunk_idx=cur_obs_chunk_idx)
+                )
                 obs = {}
                 num_steps_to_write = 0
                 cur_obs_chunk_idx += 1
 
-            queue.put(WriteTask(output_path, "actions", np.concatenate(actions, axis=0)))
-            queue.put(WriteTask(output_path, "tasks", tasks))
-            queue.put(WriteTask(output_path, "episode_start_end_idxs", episode_start_end_idxs))
-            queue.put(WriteTask(output_path, "close", None))
-
-        queue.put(None)
-        writer_process.join()
+            execute_write_task_func(WriteTask(output_path, "actions", np.concatenate(actions, axis=0)))
+            execute_write_task_func(WriteTask(output_path, "tasks", tasks))
+            execute_write_task_func(WriteTask(output_path, "episode_start_end_idxs", episode_start_end_idxs))
+            execute_write_task_func(WriteTask(output_path, "close", None))
 
     def calculate_dataset_statistics(self) -> dict:
-        ds, builder = self.build_tf_dataset(split="all")
+        ds, builder = self.build_tf_dataset(merge_splits=True)
+
+        print(builder.info)
 
         key = hashlib.sha256(
             str(builder.info).encode("utf-8"),
@@ -407,18 +352,25 @@ class Convertor:
 
         return statistics
 
-    def build_tf_dataset(self, split: str | None = None):
+    def build_tf_dataset(self, merge_splits: bool = False):
         if self.dataset_dir:
             builder = tfds.builder_from_directory(str(self.dataset_dir))
         else:
             builder = tfds.builder(self.dataset_name)
 
-        ds = builder.as_dataset(
-            split=split,
-            decoders={"steps": tfds.decode.SkipDecoding()},
-        )
+        ds_dict = builder.as_dataset(decoders={"steps": tfds.decode.SkipDecoding()})
 
-        def reformat_episode(i: tf.Tensor, episode: dict) -> dict:
+        if merge_splits:
+            ds = None
+            for split in ds_dict.keys():
+                if ds is None:
+                    ds = ds_dict[split]
+                else:
+                    ds = ds.concatenate(ds_dict[split])
+        else:
+            ds = ds_dict
+
+        def unnest_steps(i: tf.Tensor, episode: dict) -> dict:
             steps = episode.pop("steps")
 
             episode_len = tf.shape(tf.nest.flatten(steps)[0])[0]
@@ -441,13 +393,13 @@ class Convertor:
 
             return episode
 
-        def reformat_step(step: dict) -> dict:
+        def reformat_episode(episode: dict) -> dict:
             # apply standardization if provided
             if self.spec.standardize_func:
-                step = self.spec.standardize_func(step)
+                episode = self.spec.standardize_func(episode)
 
             obs = {}
-            old_obs = step["observation"]
+            old_obs = episode["observation"]
 
             if self.use_rgb and self.spec.rgb_obs_keys:
                 for new_key, old_key in self.spec.rgb_obs_keys.items():
@@ -463,24 +415,24 @@ class Convertor:
             task = {}
 
             if self.spec.language_key:
-                task["language_instruction"] = step[self.spec.language_key]
+                task["language_instruction"] = episode[self.spec.language_key]
 
             return {
                 "observation": obs,
                 "task": task,
-                "action": tf.cast(step["action"], tf.float32),
+                "action": tf.cast(episode["action"], tf.float32),
                 "dataset_name": self.dataset_name,
-                "_episode_len": step["_episode_len"],
-                "_episode_idx": step["_episode_idx"],
-                "_step_idx": step["_step_idx"],
+                "_episode_len": episode["_episode_len"],
+                "_episode_idx": episode["_episode_idx"],
+                "_step_idx": episode["_step_idx"],
             }
 
         if isinstance(ds, dict):
             ds = {
-                k: v.enumerate().map(reformat_episode).map(reformat_step)
+                k: v.enumerate().map(unnest_steps).map(reformat_episode)
                 for k, v in ds.items()
             }
         else:
-            ds = ds.enumerate().map(reformat_episode).map(reformat_step)
+            ds = ds.enumerate().map(unnest_steps).map(reformat_episode)
 
         return ds, builder

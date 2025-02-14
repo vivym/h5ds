@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from .convertor import Convertor
+from .convertor import Convertor, DATASET_SPECS
 
 
 def convert(src_type: str, input_dir: str, output_dir: str):
@@ -106,7 +106,7 @@ def main():
         "--dataset-name",
         type=str,
         required=True,
-        choices=["cmu_play_fusion"],
+        choices=DATASET_SPECS.keys(),
         help="Dataset name",
     )
     convert_parser.add_argument(
