@@ -20,14 +20,15 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-    "blosc2>=3.0.0",
-    "blosc2_grok>=0.3.3",
     "h5py>=3.12.1",
-    "hdf5plugin>=5.0.0",
     "Pillow>=11.1.0",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+convertor = [
     "tensorflow>=2.18.0",
     "tfds-nightly",
-    "tqdm>=4.67.1",
 ]
 
 [project.urls]

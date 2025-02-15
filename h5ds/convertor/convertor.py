@@ -14,14 +14,14 @@ try:
     import tensorflow as tf
 except ImportError:
     raise ImportError(
-        "tensorflow is not installed. Please install it with `pip install tensorflow`"
+        "tensorflow is not installed. Please install it with `pip install \"tensorflow>=2.18.0\"`"
     )
 
 try:
     import tensorflow_datasets as tfds
 except ImportError:
     raise ImportError(
-        "tensorflow-datasets is not installed. Please install it with `pip install tensorflow-datasets`"
+        "tensorflow-datasets is not installed. Please install it with `pip install tfds-nightly`"
     )
 
 

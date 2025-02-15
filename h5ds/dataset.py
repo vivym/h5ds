@@ -1,10 +1,19 @@
 import io
 import json
+from dataclasses import dataclass, field
+from typing import Callable
 
 import h5py
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
+
+
+@dataclass(frozen=True)
+class Mappers:
+    action: Callable | None = None
+    obs: dict[str, Callable | None] = field(default_factory=dict)
+    task: dict[str, Callable | None] = field(default_factory=dict)
 
 
 class H5Dataset(Dataset):
@@ -14,6 +23,7 @@ class H5Dataset(Dataset):
         obs_seq_len: int = 2,
         obs_seq_stride: int = 1,
         action_seq_len: int = 64,
+        mappers: Mappers = Mappers(),
         training: bool = True,
         repeat: int = 1,
     ):
@@ -21,6 +31,7 @@ class H5Dataset(Dataset):
         self.obs_seq_len = obs_seq_len
         self.obs_seq_stride = obs_seq_stride
         self.action_seq_len = action_seq_len
+        self.mappers = mappers
         self.training = training
         self.repeat = repeat
 
@@ -29,6 +40,7 @@ class H5Dataset(Dataset):
         self._episode_start_end_idxs: list[tuple[int, int, int, int, int]] | None = None
         self._actions: np.ndarray | None = None
         self._language_instructions: list[str] | None = None
+        self._tasks: dict[str, np.ndarray] = {}
         self.cached_chunk_indices: dict[str, list[tuple[int, int]]] = {}
 
     @property
@@ -95,34 +107,51 @@ class H5Dataset(Dataset):
             self._language_instructions = language_instructions
         return self._language_instructions
 
+    def get_tasks(self, key: str) -> np.ndarray | None:
+        if key not in self._tasks:
+            tasks_group = self.h5_fp.get("tasks", None)
+            if tasks_group is None:
+                raise ValueError("Tasks group not found in HDF5 file")
+            if key not in tasks_group:
+                v = None
+            else:
+                v = tasks_group[key][:]
+
+                if key == "language_instruction":
+                    v = [t.decode("utf-8") for t in v.tolist()]
+            self._tasks[key] = v
+        return self._tasks[key]
+
     def __len__(self):
         return len(self.episode_start_end_idxs) * self.repeat
 
     def __getitem__(self, idx: int):
         assert isinstance(idx, int)
-        ep_idx = idx % len(self.episode_start_end_idxs)
+        episode_idx = idx % len(self.episode_start_end_idxs)
 
         (
             start_idx,
             end_idx,
             chunk_idx,
             chunk_start_idx,
-            chunk_end_idx,
-        ) = self.episode_start_end_idxs[ep_idx]
+            _,
+        ) = self.episode_start_end_idxs[episode_idx]
 
         episode_len = end_idx - start_idx
         assert episode_len >= self.action_seq_len
         if self.training:
+            # [0, episode_len - self.action_seq_len + 1)
             step_idx = np.random.randint(0, episode_len - self.action_seq_len + 1)
         else:
             # Use fixed seed for deterministic validation/test indices
             rng = np.random.default_rng(idx)
             step_idx = rng.integers(0, episode_len - self.action_seq_len + 1)
 
-        language_instruction = self.language_instructions[start_idx + step_idx]
-
         actions = self.actions[start_idx + step_idx : start_idx + step_idx + self.action_seq_len]
         assert actions.shape[0] == self.action_seq_len
+
+        if self.mappers.action is not None:
+            actions = self.mappers.action(actions)
 
         obs_group = self.h5_fp.get("observations", {})
         obs = {}
@@ -134,9 +163,13 @@ class H5Dataset(Dataset):
             cur -= self.obs_seq_stride
         obs_selected_idxs = list(reversed(obs_selected_idxs))
 
-        for key, g in obs_group.items():
-            chunk_key = f"{chunk_idx:06d}"
+        for key, mapper in self.mappers.obs.items():
+            g = obs_group.get(key, None)
+            if g is None:
+                raise ValueError(f"Observation group not found for key: {key}")
+            assert mapper is None or callable(mapper)
 
+            chunk_key = f"{chunk_idx:06d}"
             chunk = g.get(chunk_key, None)
             if chunk is None:
                 raise ValueError(f"Chunk not found for key: {key}")
@@ -178,13 +211,28 @@ class H5Dataset(Dataset):
 
             if v.shape[0] < self.obs_seq_len:
                 # Pad with the first value
-                v = np.concatenate([v[:1] * (self.obs_seq_len - v.shape[0]), v], axis=0)
-            assert v.shape[0] == self.obs_seq_len
+                v = np.concatenate([v[:1]] * (self.obs_seq_len - v.shape[0]) + [v], axis=0)
+            assert v.shape[0] == self.obs_seq_len, f"{v.shape[0]} != {self.obs_seq_len}"
 
-            obs[key] = v
+            if mapper is None:
+                obs[key] = v
+            else:
+                obs[key] = mapper(v)
+
+        tasks = {}
+        for key, mapper in self.mappers.task.items():
+            assert mapper is None or callable(mapper)
+            v = self.get_tasks(key)
+            if v is None:
+                raise ValueError(f"Task not found for key: {key}")
+            v = v[start_idx + step_idx]
+            if mapper is None:
+                tasks[key] = v
+            else:
+                tasks[key] = mapper(v)
 
         return {
             "actions": actions,
             "observations": obs,
-            "language_instruction": language_instruction,
+            "tasks": tasks,
         }
