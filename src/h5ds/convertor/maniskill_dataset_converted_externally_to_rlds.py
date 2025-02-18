@@ -4,14 +4,10 @@ from .dataset_spec import DatasetSpec
 from .robot_spec import RobotSpec
 
 robot_spec = RobotSpec(
-    name="Google Robot",
+    name="Franka",
     num_arms=1,
     action_space="delta end-effector",
 )
-
-
-def invert_gripper_actions(actions: tf.Tensor):
-    return 1 - actions
 
 
 def binarize_gripper_actions(
@@ -56,43 +52,36 @@ def binarize_gripper_actions(
 
 
 def standardize(episode: dict) -> dict:
+    gripper_action = binarize_gripper_actions((episode["action"][:, -1] + 1) / 2)
+
+    # eef_delta_xyz, eef_delta_euler, gripper_open
     episode["action"] = tf.concat(
-        [
-            episode["action"]["future/xyz_residual"][:, :3],
-            episode["action"]["future/axis_angle_residual"][:, :3],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["action"]["future/target_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
-        ],
+        (
+            episode["action"][:, 0:3] * 0.1,
+            episode["action"][:, 3:6] * 0.1,
+            gripper_action[:, None],
+        ),
         axis=-1,
     )
 
+    gripper_action = episode["observation"]["state"][:, -1]
     episode["observation"]["proprio"] = tf.concat(
         (
-            episode["observation"]["present/xyz"],
-            episode["observation"]["present/axis_angle"],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["observation"]["present/sensed_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
+            # arm_joint_pos, gripper_joint_0_pos, gripper_joint_1_pos
+            episode["observation"]["state"][:, 0:7],
+            episode["observation"]["state"][:, 7:9] * 25.0,
         ),
         axis=-1,
     )
     episode["observation"]["robot_spec"] = robot_spec
 
-    episode["language_instruction"] = (
-        episode["observation"]["natural_language_instruction"]
-    )
-
     return episode
 
 
-bc_z_data_spec = DatasetSpec(
+maniskill_dataset_converted_externally_to_rlds_spec = DatasetSpec(
     rgb_obs_keys={
         "rgb_primary": "image",
+        "rgb_wrist": "wrist_image",
     },
     proprio_obs_key="proprio",
     language_key="language_instruction",

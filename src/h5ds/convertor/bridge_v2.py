@@ -4,14 +4,10 @@ from .dataset_spec import DatasetSpec
 from .robot_spec import RobotSpec
 
 robot_spec = RobotSpec(
-    name="Google Robot",
+    name="WindowX",
     num_arms=1,
     action_space="delta end-effector",
 )
-
-
-def invert_gripper_actions(actions: tf.Tensor):
-    return 1 - actions
 
 
 def binarize_gripper_actions(
@@ -58,41 +54,29 @@ def binarize_gripper_actions(
 def standardize(episode: dict) -> dict:
     episode["action"] = tf.concat(
         [
-            episode["action"]["future/xyz_residual"][:, :3],
-            episode["action"]["future/axis_angle_residual"][:, :3],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["action"]["future/target_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
+            episode["action"][:, :6],
+            binarize_gripper_actions(episode["action"][:, -1])[:, None],
         ],
         axis=-1,
     )
 
     episode["observation"]["proprio"] = tf.concat(
         (
-            episode["observation"]["present/xyz"],
-            episode["observation"]["present/axis_angle"],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["observation"]["present/sensed_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
+            episode["observation"]["state"][:, :6],
+            binarize_gripper_actions(episode["observation"]["state"][:, -1])[:, None],
+            episode["observation"]["qpos"],
         ),
         axis=-1,
     )
     episode["observation"]["robot_spec"] = robot_spec
 
-    episode["language_instruction"] = (
-        episode["observation"]["natural_language_instruction"]
-    )
-
     return episode
 
 
-bc_z_data_spec = DatasetSpec(
+bridge_v2_spec = DatasetSpec(
     rgb_obs_keys={
-        "rgb_primary": "image",
+        "rgb_primary": "image_0",
+        "rgb_secondary": "image_1",
     },
     proprio_obs_key="proprio",
     language_key="language_instruction",

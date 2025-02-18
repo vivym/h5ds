@@ -59,19 +59,25 @@ def standardize(episode: dict) -> dict:
 
     episode["action"] = tf.concat(
         [
-            episode["action_dict"]["joint_position"][:, :7],
-            gripper_action[:, None],
+            episode["action_dict"]["cartesian_position"],   # 6
+            episode["action_dict"]["cartesian_velocity"],    # 6
+            gripper_action[:, None], # 1
+            episode["action_dict"]["gripper_velocity"], # 1
+            episode["action_dict"]["joint_position"], # 7
+            episode["action_dict"]["joint_velocity"], # 7
         ],
         axis=-1,
     )
 
     gripper_action = episode["observation"]["gripper_position"][:, -1]
+    # TODO: check if this is correct, invert?
     gripper_action = binarize_gripper_actions(gripper_action, 0.95, 0.05)
 
     episode["observation"]["proprio"] = tf.concat(
         (
-            episode["observation"]["joint_position"][:, :],
+            episode["observation"]["cartesian_position"], # 6
             gripper_action[:, None],
+            episode["observation"]["joint_position"],   # 7
         ),
         axis=1
     )

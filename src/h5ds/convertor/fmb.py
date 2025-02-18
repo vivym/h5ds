@@ -4,14 +4,10 @@ from .dataset_spec import DatasetSpec
 from .robot_spec import RobotSpec
 
 robot_spec = RobotSpec(
-    name="Google Robot",
+    name="Franka",
     num_arms=1,
     action_space="delta end-effector",
 )
-
-
-def invert_gripper_actions(actions: tf.Tensor):
-    return 1 - actions
 
 
 def binarize_gripper_actions(
@@ -58,41 +54,32 @@ def binarize_gripper_actions(
 def standardize(episode: dict) -> dict:
     episode["action"] = tf.concat(
         [
-            episode["action"]["future/xyz_residual"][:, :3],
-            episode["action"]["future/axis_angle_residual"][:, :3],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["action"]["future/target_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
+            episode["action"][:, :6],
+            binarize_gripper_actions(episode["action"][:, -1])[:, None],
         ],
         axis=-1,
     )
 
     episode["observation"]["proprio"] = tf.concat(
         (
-            episode["observation"]["present/xyz"],
-            episode["observation"]["present/axis_angle"],
-            binarize_gripper_actions(
-                1 - tf.cast(episode["observation"]["present/sensed_close"][:, :1], tf.float32),
-                open_boundary=0.95,
-                close_boundary=0.25,
-            ),
+            episode["observation"]["eef_pose"], # 7: xyz + quat
+            episode["observation"]["eef_vel"],  # 6: xyz + rpy
+            binarize_gripper_actions(1 - episode["observation"]["state_gripper_pose"])[:, None],
+            episode["observation"]["joint_pos"], # 7
+            episode["observation"]["joint_vel"], # 7
         ),
         axis=-1,
     )
     episode["observation"]["robot_spec"] = robot_spec
 
-    episode["language_instruction"] = (
-        episode["observation"]["natural_language_instruction"]
-    )
-
     return episode
 
 
-bc_z_data_spec = DatasetSpec(
+fmb_spec = DatasetSpec(
     rgb_obs_keys={
-        "rgb_primary": "image",
+        "rgb_primary": "image_side_1",
+        "rgb_secondary": "image_side_2",
+        "rgb_wrist": "image_wrist_1",
     },
     proprio_obs_key="proprio",
     language_key="language_instruction",

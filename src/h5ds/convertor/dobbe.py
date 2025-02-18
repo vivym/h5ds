@@ -11,7 +11,16 @@ robot_spec = RobotSpec(
 
 
 def standardize(episode: dict) -> dict:
-    episode["observation"]["proprio"] = episode["observation"]["state"]
+    # action: eef_vel_xyz, eef_euler_vel, gripper_open
+
+    episode["observation"]["proprio"] = tf.concat(
+        (
+            tf.clip_by_value(episode["observation"]["xyz"][:, :], -10, 10),
+            episode["observation"]["rot"][:, :],
+            episode["observation"]["gripper"],
+        ),
+        axis=1,
+    )
     episode["observation"]["robot_spec"] = robot_spec
 
     return episode

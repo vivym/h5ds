@@ -4,7 +4,7 @@ from .dataset_spec import DatasetSpec
 from .robot_spec import RobotSpec
 
 robot_spec = RobotSpec(
-    name="WindowX",
+    name="Kuka iiwa",
     num_arms=1,
     action_space="delta end-effector",
 )
@@ -53,19 +53,28 @@ def standardize(episode: dict) -> dict:
             episode["action"]["world_vector"],
             episode["action"]["rotation_delta"],
             gripper_action[:, None],
-            episode["action"]["base_displacement_vector"] * 3,
-            episode["action"]["base_displacement_vertical_rotation"] * 3,
+            episode["action"]["base_displacement_vector"],
+            episode["action"]["base_displacement_vertical_rotation"],
         ],
         axis=-1,
     )
 
+    # decode compressed state
+    eef_value = tf.io.decode_compressed(
+        episode["observation"]["clip_function_input/base_pose_tool_reached"],
+        compression_type="ZLIB",
+    )
+    eef_value = tf.io.decode_raw(eef_value, tf.float32)
+    gripper_value = tf.io.decode_compressed(
+        episode["observation"]["gripper_closed"], compression_type="ZLIB"
+    )
+    gripper_value = tf.io.decode_raw(gripper_value, tf.float32)
+
     episode["observation"]["proprio"] = tf.concat(
         (
             # eef_pos_xyz, eef_quat
-            episode["observation"]["base_pose_tool_reached"],
-            invert_gripper_actions(
-                tf.cast(episode["observation"]["gripper_closed"], tf.float32)
-            ),
+            tf.reshape(eef_value, (-1, 7)),
+            invert_gripper_actions(tf.reshape(gripper_value, (-1, 1))),
         ),
         axis=-1,
     )
@@ -78,7 +87,7 @@ def standardize(episode: dict) -> dict:
     return episode
 
 
-fractal20220817_data_spec = DatasetSpec(
+kuka_spec = DatasetSpec(
     rgb_obs_keys={
         "rgb_primary": "image",
     },

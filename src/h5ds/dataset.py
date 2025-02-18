@@ -12,20 +12,59 @@ from torch.utils.data import Dataset
 @dataclass(frozen=True)
 class Mappers:
     action: Callable | None = None
-    obs: dict[str, Callable | None] = field(default_factory=dict)
+    observation: dict[str, Callable | None] = field(default_factory=dict)
     task: dict[str, Callable | None] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Statistic:
+    mean: np.ndarray
+    std: np.ndarray
+    min: np.ndarray
+    max: np.ndarray
+    p99: np.ndarray
+    p01: np.ndarray
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Statistic":
+        return cls(
+            mean=np.array(data["mean"]),
+            std=np.array(data["std"]),
+            min=np.array(data["min"]),
+            max=np.array(data["max"]),
+            p99=np.array(data["p99"]),
+            p01=np.array(data["p01"]),
+        )
+
+
+@dataclass(frozen=True)
+class Statistics:
+    action: Statistic
+    num_actions: int
+    num_episodes: int
+    proprio: Statistic | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Statistics":
+        return cls(
+            action=Statistic.from_dict(data["action"]),
+            num_actions=data["num_actions"],
+            num_episodes=data["num_episodes"],
+            proprio=Statistic.from_dict(data["proprio"]) if "proprio" in data else None,
+        )
 
 
 class H5Dataset(Dataset):
     def __init__(
         self,
         h5_path: str,
-        obs_seq_len: int = 2,
+        obs_seq_len: int = 1,
         obs_seq_stride: int = 1,
-        action_seq_len: int = 64,
+        action_seq_len: int = 1,
         mappers: Mappers = Mappers(),
         training: bool = True,
         repeat: int = 1,
+        statistic_mode: bool = False,
     ):
         self.h5_path = h5_path
         self.obs_seq_len = obs_seq_len
@@ -34,9 +73,10 @@ class H5Dataset(Dataset):
         self.mappers = mappers
         self.training = training
         self.repeat = repeat
+        self.statistic_mode = statistic_mode
 
         self._h5_fp: h5py.File | None = None
-        self._statistics: dict | None = None
+        self._statistics: Statistics | None = None
         self._episode_start_end_idxs: list[tuple[int, int, int, int, int]] | None = None
         self._actions: np.ndarray | None = None
         self._language_instructions: list[str] | None = None
@@ -50,14 +90,14 @@ class H5Dataset(Dataset):
         return self._h5_fp
 
     @property
-    def statistics(self) -> dict:
+    def statistics(self) -> Statistics:
         if self._statistics is None:
             statistics_str = self.h5_fp.get("statistics", None)
             if statistics_str is None:
                 raise ValueError("Statistics not found in HDF5 file")
             statistics_str = np.array(statistics_str).item()
             assert isinstance(statistics_str, bytes)
-            self._statistics = json.loads(statistics_str.decode("utf-8"))
+            self._statistics = Statistics.from_dict(json.loads(statistics_str.decode("utf-8")))
         return self._statistics
 
     @property
@@ -134,36 +174,48 @@ class H5Dataset(Dataset):
             end_idx,
             chunk_idx,
             chunk_start_idx,
-            _,
+            chunk_end_idx,
         ) = self.episode_start_end_idxs[episode_idx]
 
         episode_len = end_idx - start_idx
         assert episode_len >= self.action_seq_len
-        if self.training:
+
+        if self.statistic_mode:
+            step_idx = 0
+            action_seq_len = episode_len
+        elif self.training:
             # [0, episode_len - self.action_seq_len + 1)
             step_idx = np.random.randint(0, episode_len - self.action_seq_len + 1)
+            action_seq_len = self.action_seq_len
         else:
             # Use fixed seed for deterministic validation/test indices
             rng = np.random.default_rng(idx)
             step_idx = rng.integers(0, episode_len - self.action_seq_len + 1)
+            action_seq_len = self.action_seq_len
 
-        actions = self.actions[start_idx + step_idx : start_idx + step_idx + self.action_seq_len]
-        assert actions.shape[0] == self.action_seq_len
+        actions = self.actions[start_idx + step_idx : start_idx + step_idx + action_seq_len]
+        assert actions.shape[0] == action_seq_len
 
         if self.mappers.action is not None:
-            actions = self.mappers.action(actions)
+            actions = self.mappers.action(actions, statistic=self.statistics.action)
 
         obs_group = self.h5_fp.get("observations", {})
         obs = {}
 
-        obs_selected_idxs = []
-        cur = step_idx
-        while cur >= 0 and len(obs_selected_idxs) < self.obs_seq_len:
-            obs_selected_idxs.append(chunk_start_idx + cur)
-            cur -= self.obs_seq_stride
-        obs_selected_idxs = list(reversed(obs_selected_idxs))
+        if self.statistic_mode:
+            obs_selected_idxs = list(range(chunk_start_idx, chunk_end_idx))
+        else:
+            obs_selected_idxs = []
+            cur = step_idx
+            while cur >= 0 and len(obs_selected_idxs) < self.obs_seq_len:
+                obs_selected_idxs.append(chunk_start_idx + cur)
+                cur -= self.obs_seq_stride
+            obs_selected_idxs = list(reversed(obs_selected_idxs))
 
-        for key, mapper in self.mappers.obs.items():
+        for key, mapper in self.mappers.observation.items():
+            if (key.startswith("rgb_") or key.startswith("depth_")) and self.statistic_mode:
+                continue
+
             g = obs_group.get(key, None)
             if g is None:
                 raise ValueError(f"Observation group not found for key: {key}")
@@ -209,15 +261,17 @@ class H5Dataset(Dataset):
             else:
                 raise ValueError(f"Unknown observation key: {key}")
 
-            if v.shape[0] < self.obs_seq_len:
-                # Pad with the first value
-                v = np.concatenate([v[:1]] * (self.obs_seq_len - v.shape[0]) + [v], axis=0)
-            assert v.shape[0] == self.obs_seq_len, f"{v.shape[0]} != {self.obs_seq_len}"
+            if not self.statistic_mode:
+                if v.shape[0] < self.obs_seq_len:
+                    # Pad with the first value
+                    v = np.concatenate([v[:1]] * (self.obs_seq_len - v.shape[0]) + [v], axis=0)
+                assert v.shape[0] == self.obs_seq_len, f"{v.shape[0]} != {self.obs_seq_len}"
 
             if mapper is None:
                 obs[key] = v
             else:
-                obs[key] = mapper(v)
+                statistic = self.statistics.proprio if key == "proprio" else None
+                obs[key] = mapper(v, statistic=statistic)
 
         tasks = {}
         for key, mapper in self.mappers.task.items():
