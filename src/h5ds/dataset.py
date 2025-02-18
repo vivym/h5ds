@@ -218,7 +218,11 @@ class H5Dataset(Dataset):
 
             g = obs_group.get(key, None)
             if g is None:
-                raise ValueError(f"Observation group not found for key: {key}")
+                if mapper is not None:
+                    obs[key] = mapper(None, statistic=None)
+                    continue
+                else:
+                    raise ValueError(f"Observation group not found for key: {key}")
             assert mapper is None or callable(mapper)
 
             chunk_key = f"{chunk_idx:06d}"

@@ -13,8 +13,6 @@ from .maniskill_dataset_converted_externally_to_rlds import (
     maniskill_dataset_converted_externally_to_rlds_spec,
 )
 
-# TODO: robot_set, rh20t, kuka, berkeley_rpt_converted_externally_to_rlds, maniskill_dataset_converted_externally_to_rlds
-
 DATASET_SPECS = {
     "bc_z": bc_z_data_spec,
     "bridge": bridge_spec,
