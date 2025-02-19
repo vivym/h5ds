@@ -111,10 +111,7 @@ def execute_write_task(task: WriteTask, *, fp_dict: dict[str, h5py.File]):
             g = fp["tasks"]
 
         for key, value in task.data.items():
-            if len(value) > 0 and isinstance(value[0], str):
-                g.create_dataset(key, data=value, dtype=h5py.string_dtype())
-            else:
-                g.create_dataset(key, data=np.concatenate(value, axis=0))
+            g.create_dataset(key, data=np.concatenate(value, axis=0))
     elif task.type == "episode_start_end_idxs":
         fp.create_dataset("episode_start_end_idxs", data=task.data, dtype=np.int64)
     elif task.type == "close":
@@ -197,10 +194,9 @@ class Convertor:
             episode_start_end_idxs = []
             cur_step = 0
             num_steps_to_write = 0
+            cur_obs_chunk_idx = 0
 
             execute_write_task_func(WriteTask(output_path, "statistics", statistics_str))
-
-            cur_obs_chunk_idx = 0
 
             for episode in tqdm(
                 ds.as_numpy_iterator(),

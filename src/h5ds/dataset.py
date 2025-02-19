@@ -143,7 +143,14 @@ class H5Dataset(Dataset):
             if language_instructions is not None:
                 language_instructions = language_instructions[:]
                 language_instructions = language_instructions.tolist()
-                language_instructions = [t.decode("utf-8") for t in language_instructions]
+
+                def decode(t: bytes | list[bytes]) -> str | list[str]:
+                    if isinstance(t, bytes):
+                        return t.decode("utf-8")
+                    else:
+                        return [t_i.decode("utf-8") for t_i in t]
+
+                language_instructions = [decode(t) for t in language_instructions]
             self._language_instructions = language_instructions
         return self._language_instructions
 
@@ -158,7 +165,13 @@ class H5Dataset(Dataset):
                 v = tasks_group[key][:]
 
                 if key == "language_instruction":
-                    v = [t.decode("utf-8") for t in v.tolist()]
+                    def decode(t: bytes | list[bytes]) -> str | list[str]:
+                        if isinstance(t, bytes):
+                            return t.decode("utf-8")
+                        else:
+                            return [t_i.decode("utf-8") for t_i in t]
+
+                    v = [decode(t) for t in v.tolist()]
             self._tasks[key] = v
         return self._tasks[key]
 
@@ -277,17 +290,28 @@ class H5Dataset(Dataset):
                 statistic = self.statistics.proprio if key == "proprio" else None
                 obs[key] = mapper(v, statistic=statistic)
 
+        tasks_g = self.h5_fp.get("tasks", {})
+
         tasks = {}
         for key, mapper in self.mappers.task.items():
             assert mapper is None or callable(mapper)
-            v = self.get_tasks(key)
-            if v is None:
-                raise ValueError(f"Task not found for key: {key}")
-            v = v[start_idx + step_idx]
-            if mapper is None:
-                tasks[key] = v
+
+            if key in tasks_g:
+                v = tasks_g[key][start_idx + step_idx]
+
+                if key == "language_instruction":
+                    if isinstance(v, bytes):
+                        v = v.decode("utf-8")
+                    else:
+                        v = [v_i.decode("utf-8") for v_i in v]
+
+                if mapper is None:
+                    tasks[key] = v
+                else:
+                    tasks[key] = mapper(v)
             else:
-                tasks[key] = mapper(v)
+                assert mapper is not None
+                tasks[key] = mapper(None)
 
         return {
             "actions": actions,
