@@ -1,7 +1,7 @@
 import io
 import json
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
 import h5py
 import numpy as np
@@ -64,7 +64,7 @@ class H5Dataset(Dataset):
         mappers: Mappers = Mappers(),
         training: bool = True,
         repeat: int = 1,
-        statistic_mode: bool = False,
+        mode: Literal["default", "statistic", "no_obs"] = "default",
     ):
         self.h5_path = h5_path
         self.obs_seq_len = obs_seq_len
@@ -73,7 +73,7 @@ class H5Dataset(Dataset):
         self.mappers = mappers
         self.training = training
         self.repeat = repeat
-        self.statistic_mode = statistic_mode
+        self.mode = mode
 
         self._h5_fp: h5py.File | None = None
         self._statistics: Statistics | None = None
@@ -165,11 +165,11 @@ class H5Dataset(Dataset):
                 v = tasks_group[key][:]
 
                 if key == "language_instruction":
-                    def decode(t: bytes | list[bytes]) -> str | list[str]:
+                    def decode(t: bytes | list[bytes]) -> str | tuple[str, ...]:
                         if isinstance(t, bytes):
                             return t.decode("utf-8")
                         else:
-                            return [t_i.decode("utf-8") for t_i in t]
+                            return (t_i.decode("utf-8") for t_i in t)
 
                     v = [decode(t) for t in v.tolist()]
             self._tasks[key] = v
@@ -193,7 +193,7 @@ class H5Dataset(Dataset):
         episode_len = end_idx - start_idx
         assert episode_len >= self.action_seq_len
 
-        if self.statistic_mode:
+        if self.mode == "statistic":
             step_idx = 0
             action_seq_len = episode_len
         elif self.training:
@@ -215,7 +215,7 @@ class H5Dataset(Dataset):
         obs_group = self.h5_fp.get("observations", {})
         obs = {}
 
-        if self.statistic_mode:
+        if self.mode == "statistic":
             obs_selected_idxs = list(range(chunk_start_idx, chunk_end_idx))
         else:
             obs_selected_idxs = []
@@ -226,7 +226,10 @@ class H5Dataset(Dataset):
             obs_selected_idxs = list(reversed(obs_selected_idxs))
 
         for key, mapper in self.mappers.observation.items():
-            if (key.startswith("rgb_") or key.startswith("depth_")) and self.statistic_mode:
+            if self.mode == "no_obs":
+                continue
+
+            if (key.startswith("rgb_") or key.startswith("depth_")) and self.mode == "statistic":
                 continue
 
             g = obs_group.get(key, None)
@@ -278,7 +281,7 @@ class H5Dataset(Dataset):
             else:
                 raise ValueError(f"Unknown observation key: {key}")
 
-            if not self.statistic_mode:
+            if self.mode == "default":
                 if v.shape[0] < self.obs_seq_len:
                     # Pad with the first value
                     v = np.concatenate([v[:1]] * (self.obs_seq_len - v.shape[0]) + [v], axis=0)
