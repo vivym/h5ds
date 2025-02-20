@@ -1,6 +1,6 @@
 import argparse
 
-from .convertor import Convertor, DATASET_SPECS
+from .convertor import CalvinConvertor, Convertor, DATASET_SPECS
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
         "--dataset-name",
         type=str,
         required=True,
-        choices=DATASET_SPECS.keys(),
+        choices=list(DATASET_SPECS.keys()) + ["calvin"],
         help="Dataset name",
     )
     convert_parser.add_argument(
@@ -30,14 +30,20 @@ def main():
     args = parser.parse_args()
 
     if args.command == "convert":
-        convertor = Convertor(
-            dataset_name=args.dataset_name,
-            dataset_dir=args.input_dir,
-            output_dir=args.output_dir,
-            use_rgb=True,
-            use_depth=True,
-            use_proprio=True,
-        )
+        if args.dataset_name == "calvin":
+            convertor = CalvinConvertor(
+                dataset_dir=args.input_dir,
+                output_dir=args.output_dir,
+            )
+        else:
+            convertor = Convertor(
+                dataset_name=args.dataset_name,
+                dataset_dir=args.input_dir,
+                output_dir=args.output_dir,
+                use_rgb=True,
+                use_depth=True,
+                use_proprio=True,
+            )
         convertor.convert()
 
 

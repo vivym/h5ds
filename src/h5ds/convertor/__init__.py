@@ -1,3 +1,4 @@
+from .calvin_convertor import CalvinConvertor
 from .convertor import Convertor
 
 from .bc_z import bc_z_data_spec
